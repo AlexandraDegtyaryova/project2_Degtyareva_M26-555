@@ -1,10 +1,15 @@
 """Разбор небольшого SQL-подобного языка без выполнения пользовательского кода."""
 
-import ast
 import json
-import re
 
-TOKEN = re.compile(r""""(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[(),=]|[^\s(),="'\\]+""")
+from primitive_db.constants import (
+    ASSIGNMENT_GROUP_SIZE,
+    ASSIGNMENT_TOKEN_COUNT,
+    MIN_INSERT_TOKEN_COUNT,
+    MIN_UPDATE_TOKEN_COUNT,
+    SINGLE_QUOTE_ESCAPES,
+    VALUE_SEPARATOR,
+)
 
 
 def tokenize(text):
@@ -15,12 +20,50 @@ def tokenize(text):
         if text[position].isspace():
             position += 1
             continue
-        match = TOKEN.match(text, position)
-        if match is None:
-            raise ValueError("проверьте кавычки и экранирование в строке")
-        tokens.append(match.group())
-        position = match.end()
+        start = position
+        character = text[position]
+        if character in "(),=":
+            tokens.append(character)
+            position += 1
+        elif character in "\"'":
+            quote = character
+            position += 1
+            while position < len(text) and text[position] != quote:
+                if text[position] == "\\":
+                    position += 1
+                position += 1
+            if position >= len(text):
+                raise ValueError("проверьте кавычки и экранирование в строке")
+            position += 1
+            tokens.append(text[start:position])
+        else:
+            while (
+                position < len(text)
+                and not text[position].isspace()
+                and text[position] not in "(),=\"'\\"
+            ):
+                position += 1
+            if position == start:
+                raise ValueError("обратная косая черта допустима только внутри строки")
+            tokens.append(text[start:position])
     return tokens
+
+
+def parse_single_quoted_string(token):
+    """Разобрать строку в одинарных кавычках и обычные escape-последовательности."""
+    body = token[1:-1]
+    result = []
+    position = 0
+    while position < len(body):
+        character = body[position]
+        if character == "\\":
+            position += 1
+            if position >= len(body) or body[position] not in SINGLE_QUOTE_ESCAPES:
+                raise ValueError("неподдерживаемое экранирование в строке")
+            character = SINGLE_QUOTE_ESCAPES[body[position]]
+        result.append(character)
+        position += 1
+    return "".join(result)
 
 
 def parse_value(token):
@@ -31,28 +74,27 @@ def parse_value(token):
         except json.JSONDecodeError as error:
             raise ValueError("некорректная строка в двойных кавычках") from error
     if token.startswith("'"):
-        try:
-            return ast.literal_eval(token)
-        except (SyntaxError, ValueError) as error:
-            raise ValueError("некорректная строка в одинарных кавычках") from error
+        return parse_single_quoted_string(token)
     if token.lower() in {"true", "false"}:
         return token.lower() == "true"
-    if re.fullmatch(r"[+-]?[0-9]+", token):
+    digits = token[1:] if token[:1] in {"+", "-"} else token
+    if digits and digits.isascii() and digits.isdecimal():
         return int(token)
     raise ValueError(f"{token}: нужны int, bool или строка в кавычках")
 
 
 def parse_assignments(tokens, multiple=False):
-    if not tokens or len(tokens) % 4 != 3:
+    """Разобрать одно условие или несколько присваиваний через запятую."""
+    if not tokens or len(tokens) % ASSIGNMENT_GROUP_SIZE != ASSIGNMENT_TOKEN_COUNT:
         raise ValueError("ожидается столбец = значение")
-    if not multiple and len(tokens) != 3:
+    if not multiple and len(tokens) != ASSIGNMENT_TOKEN_COUNT:
         raise ValueError("where поддерживает одно условие столбец = значение")
     result = {}
-    for index in range(0, len(tokens), 4):
-        column, equals, value = tokens[index : index + 3]
+    for index in range(0, len(tokens), ASSIGNMENT_GROUP_SIZE):
+        column, equals, value = tokens[index : index + ASSIGNMENT_TOKEN_COUNT]
         if not column.isidentifier() or equals != "=":
             raise ValueError("ожидается столбец = значение")
-        if index and tokens[index - 1] != ",":
+        if index and tokens[index - 1] != VALUE_SEPARATOR:
             raise ValueError("присваивания set разделяются запятыми")
         if column in result:
             raise ValueError(f"столбец {column} указан повторно")
@@ -61,14 +103,17 @@ def parse_assignments(tokens, multiple=False):
 
 
 def parse_where_clause(text):
+    """Преобразовать текст условия равенства в словарь."""
     return parse_assignments(tokenize(text))
 
 
 def parse_set_clause(text):
+    """Преобразовать текст присваиваний set в словарь."""
     return parse_assignments(tokenize(text), multiple=True)
 
 
 def parse_values(text):
+    """Прочитать типизированные значения в круглых скобках."""
     tokens = tokenize(text)
     if len(tokens) < 2 or tokens[0] != "(" or tokens[-1] != ")":
         raise ValueError("values должны быть заключены в круглые скобки")
@@ -91,7 +136,7 @@ def parse_data_command(text):
 
     if command == "insert":
         if (
-            len(tokens) < 6
+            len(tokens) < MIN_INSERT_TOKEN_COUNT
             or tokens[1].lower() != "into"
             or tokens[3].lower() != "values"
         ):
@@ -115,14 +160,16 @@ def parse_data_command(text):
         return {"command": command, "table_name": tokens[2], "where": condition}
 
     if command == "update":
-        if len(tokens) < 10 or tokens[2].lower() != "set":
+        if len(tokens) < MIN_UPDATE_TOKEN_COUNT or tokens[2].lower() != "set":
             raise ValueError("ожидается update <таблица> set ... where ...")
         # Ищем ключевое слово, а не строковое значение "where" в кавычках.
         where_index = next(
             (
                 i
                 for i in range(3, len(tokens))
-                if (i - 3) % 4 == 3 and tokens[i].lower() == "where"
+                if (i - ASSIGNMENT_TOKEN_COUNT) % ASSIGNMENT_GROUP_SIZE
+                == ASSIGNMENT_TOKEN_COUNT
+                and tokens[i].lower() == "where"
             ),
             None,
         )

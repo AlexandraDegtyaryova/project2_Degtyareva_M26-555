@@ -1,14 +1,28 @@
 """Общие обёртки операций БД и замыкание для кэширования."""
 
 import time
-from functools import wraps
+
+
+def preserve_metadata(func):
+    """Сохранить имя и документацию без дополнительных стандартных модулей."""
+
+    def decorate(wrapper):
+        """Перенести метаданные исходной функции на обёртку."""
+        wrapper.__name__ = func.__name__
+        wrapper.__doc__ = func.__doc__
+        wrapper.__module__ = func.__module__
+        wrapper.__wrapped__ = func
+        return wrapper
+
+    return decorate
 
 
 def handle_db_errors(func):
     """Показать ошибку операции; None означает, что результата нет."""
 
-    @wraps(func)
+    @preserve_metadata(func)
     def wrapper(*args, **kwargs):
+        """Вызвать операцию и обработать исключения базы данных."""
         try:
             return func(*args, **kwargs)
         except FileNotFoundError:
@@ -33,8 +47,11 @@ def confirm_action(action_name):
     """Фабрика декораторов: выполнять опасную операцию только после y."""
 
     def decorator(func):
-        @wraps(func)
+        """Связать выбранное действие с конкретной функцией."""
+
+        @preserve_metadata(func)
         def wrapper(*args, **kwargs):
+            """Запросить подтверждение и при отказе вернуть None."""
             try:
                 answer = input(
                     f'Вы уверены, что хотите выполнить "{action_name}"? [y/n]: '
@@ -55,8 +72,9 @@ def confirm_action(action_name):
 def log_time(func):
     """Измерять длительность монотонными часами, сохраняя результат вызова."""
 
-    @wraps(func)
+    @preserve_metadata(func)
     def wrapper(*args, **kwargs):
+        """Вернуть результат функции и вывести длительность её выполнения."""
         started = time.monotonic()
         try:
             return func(*args, **kwargs)
@@ -72,6 +90,7 @@ def create_cacher():
     cache = {}
 
     def cache_result(key, value_func):
+        """Вычислить отсутствующий результат и запомнить его по ключу."""
         if key not in cache:
             cache[key] = value_func()
         return cache[key]

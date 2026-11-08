@@ -1,5 +1,7 @@
 import json
-from pathlib import Path
+import os
+
+from primitive_db.constants import DATA_DIR
 
 
 def load_metadata(filepath):
@@ -22,13 +24,13 @@ def table_filepath(table_name):
     """Имена таблиц не должны превращаться в пути к посторонним файлам."""
     if not table_name.isidentifier():
         raise ValueError(f"неверное имя таблицы: {table_name}")
-    return Path("data") / f"{table_name}.json"
+    return os.path.join(DATA_DIR, f"{table_name}.json")
 
 
 def load_table_data(table_name):
     """Прочитать список записей таблицы; отсутствующий файл означает []."""
     try:
-        with table_filepath(table_name).open(encoding="utf-8") as file:
+        with open(table_filepath(table_name), encoding="utf-8") as file:
             data = json.load(file)
     except FileNotFoundError:
         return []
@@ -40,10 +42,13 @@ def load_table_data(table_name):
 def save_table_data(table_name, data):
     """Создать data/ при необходимости и сохранить записи таблицы."""
     filepath = table_filepath(table_name)
-    filepath.parent.mkdir(exist_ok=True)
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
     save_metadata(filepath, data)
 
 
 def remove_table_data(table_name):
     """Удалить файл при удалении таблицы, чтобы старые записи не вернулись."""
-    table_filepath(table_name).unlink(missing_ok=True)
+    try:
+        os.remove(table_filepath(table_name))
+    except FileNotFoundError:
+        pass

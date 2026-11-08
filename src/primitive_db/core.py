@@ -1,6 +1,6 @@
 import json
-from copy import deepcopy
 
+from primitive_db.constants import ID_COLUMN, PYTHON_TYPES, VALID_TYPES
 from primitive_db.decorators import (
     confirm_action,
     create_cacher,
@@ -9,8 +9,6 @@ from primitive_db.decorators import (
 )
 from primitive_db.utils import load_table_data
 
-SUPPORTED_TYPES = {"int", "str", "bool"}
-PYTHON_TYPES = {"int": int, "str": str, "bool": bool}
 cache_select = create_cacher()
 
 
@@ -37,14 +35,14 @@ def create_table(metadata, table_name, columns):
         name, data_type = parts
         if (
             not name.isidentifier()
-            or data_type not in SUPPORTED_TYPES
+            or data_type not in VALID_TYPES
             or name in column_names
-            or (name == "ID" and data_type != "int")
+            or (name == ID_COLUMN and data_type != "int")
         ):
             raise ValueError(f"неверный тип или повтор столбца: {column}")
 
         column_names.add(name)
-        if name != "ID":
+        if name != ID_COLUMN:
             validated_columns.append(column)
 
     metadata[table_name] = validated_columns
@@ -129,12 +127,13 @@ def select(table_data, where_clause=None):
     key = json.dumps([table_data, where_clause], ensure_ascii=False, sort_keys=True)
 
     def get_result():
+        """Вычислить независимую копию результата при отсутствии ключа в кэше."""
         if where_clause is None:
-            return deepcopy(table_data)
-        return deepcopy([row for row in table_data if matches(row, where_clause)])
+            return [dict(row) for row in table_data]
+        return [dict(row) for row in table_data if matches(row, where_clause)]
 
     # Копия не позволяет вызывающему коду изменить результат внутри кэша.
-    return deepcopy(cache_select(key, get_result))
+    return [dict(row) for row in cache_select(key, get_result)]
 
 
 @handle_db_errors
