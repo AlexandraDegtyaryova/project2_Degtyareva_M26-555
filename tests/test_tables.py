@@ -18,7 +18,10 @@ from primitive_db.utils import load_metadata, save_metadata
 class TableTests(unittest.TestCase):
     def call(self, function, *args):
         output = io.StringIO()
-        with contextlib.redirect_stdout(output):
+        with (
+            contextlib.redirect_stdout(output),
+            patch("builtins.input", return_value="y"),
+        ):
             result = function(*args)
         return result, output.getvalue()
 
@@ -60,7 +63,7 @@ class TableTests(unittest.TestCase):
                 original = copy.deepcopy(metadata)
                 _, message = self.call(create_table, metadata, "users", columns)
                 self.assertEqual(metadata, original)
-                self.assertIn("Некорректное значение:", message)
+                self.assertIn("Ошибка валидации:", message)
 
     def test_explicit_id_is_first_and_not_duplicated(self):
         columns = ["name:str", "ID:int", "age:int"]
@@ -70,14 +73,15 @@ class TableTests(unittest.TestCase):
 
     def test_invalid_table_name(self):
         result, message = self.call(create_table, {}, "bad-name", ["name:str"])
-        self.assertEqual(result, {})
-        self.assertIn("Некорректное значение:", message)
+        self.assertIsNone(result)
+        self.assertIn("Ошибка валидации:", message)
 
     def test_drop_missing_keeps_other_tables(self):
         metadata = {"users": ["ID:int"]}
         result, message = self.call(drop_table, metadata, "products")
-        self.assertEqual(result, {"users": ["ID:int"]})
-        self.assertIn('Таблица "products" не существует.', message)
+        self.assertIsNone(result)
+        self.assertEqual(metadata, {"users": ["ID:int"]})
+        self.assertIn("Таблица или столбец 'products' не найден.", message)
 
 
 class StorageTests(unittest.TestCase):
@@ -132,11 +136,18 @@ class CommandTests(unittest.TestCase):
             self.assertIn("- users", first)
             second = self.session(
                 folder,
-                ["list_tables", "drop_table users", "drop_table products", "exit"],
+                [
+                    "list_tables",
+                    "drop_table users",
+                    "y",
+                    "drop_table products",
+                    "y",
+                    "exit",
+                ],
             )
             self.assertIn("- users", second)
             self.assertIn('Таблица "users" успешно удалена.', second)
-            self.assertIn('Таблица "products" не существует.', second)
+            self.assertIn("Таблица или столбец 'products' не найден.", second)
             self.assertEqual(load_metadata(Path(folder) / "db_meta.json"), {})
 
     def test_bad_commands_then_valid_quoted_command(self):
@@ -159,7 +170,11 @@ class CommandTests(unittest.TestCase):
                 ],
             )
             self.assertIn("Функции unknown нет. Попробуйте снова.", output)
-            self.assertGreaterEqual(output.count("Некорректное значение:"), 8)
+            self.assertGreaterEqual(
+                output.count("Ошибка валидации:")
+                + output.count("Некорректное значение:"),
+                8,
+            )
             self.assertEqual(
                 load_metadata(Path(folder) / "db_meta.json"),
                 {"users": ["ID:int", "name:str"]},
@@ -172,6 +187,7 @@ class CommandTests(unittest.TestCase):
                 [
                     "list_tables",
                     "drop_table missing",
+                    "y",
                     "create_table t age:float",
                     "exit",
                 ],
@@ -208,6 +224,7 @@ class CommandTests(unittest.TestCase):
         with (
             patch("primitive_db.engine.load_metadata", return_value=metadata),
             patch("primitive_db.engine.prompt.string", side_effect=commands),
+            patch("builtins.input", return_value="y"),
             patch("primitive_db.engine.save_table_data"),
             patch("primitive_db.engine.remove_table_data"),
             patch(

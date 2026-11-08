@@ -1,22 +1,30 @@
+import json
+from copy import deepcopy
+
+from primitive_db.decorators import (
+    confirm_action,
+    create_cacher,
+    handle_db_errors,
+    log_time,
+)
 from primitive_db.utils import load_table_data
 
 SUPPORTED_TYPES = {"int", "str", "bool"}
 PYTHON_TYPES = {"int": int, "str": str, "bool": bool}
+cache_select = create_cacher()
 
 
+@handle_db_errors
 def create_table(metadata, table_name, columns):
     """Проверить описание столбцов и добавить новую таблицу в metadata."""
     if table_name in metadata:
-        print(f'Ошибка: Таблица "{table_name}" уже существует.')
-        return metadata
+        raise ValueError(f'Таблица "{table_name}" уже существует.')
 
     if not table_name.isidentifier():
-        print(f"Некорректное значение: {table_name}. Попробуйте снова.")
-        return metadata
+        raise ValueError(f"неверное имя таблицы: {table_name}")
 
     if not columns:
-        print("Некорректное значение: не указаны столбцы. Попробуйте снова.")
-        return metadata
+        raise ValueError("не указаны столбцы")
 
     # Сначала проверяем ВСЕ столбцы, затем меняем metadata.
     validated_columns = ["ID:int"]
@@ -24,8 +32,7 @@ def create_table(metadata, table_name, columns):
     for column in columns:
         parts = column.split(":")
         if len(parts) != 2:
-            print(f"Некорректное значение: {column}. Попробуйте снова.")
-            return metadata
+            raise ValueError(f"неверное описание столбца: {column}")
 
         name, data_type = parts
         if (
@@ -34,8 +41,7 @@ def create_table(metadata, table_name, columns):
             or name in column_names
             or (name == "ID" and data_type != "int")
         ):
-            print(f"Некорректное значение: {column}. Попробуйте снова.")
-            return metadata
+            raise ValueError(f"неверный тип или повтор столбца: {column}")
 
         column_names.add(name)
         if name != "ID":
@@ -49,11 +55,12 @@ def create_table(metadata, table_name, columns):
     return metadata
 
 
+@handle_db_errors
+@confirm_action("удаление таблицы")
 def drop_table(metadata, table_name):
     """Удалить описание существующей таблицы."""
     if table_name not in metadata:
-        print(f'Ошибка: Таблица "{table_name}" не существует.')
-        return metadata
+        raise KeyError(table_name)
 
     del metadata[table_name]
     print(f'Таблица "{table_name}" успешно удалена.')
@@ -63,7 +70,7 @@ def drop_table(metadata, table_name):
 def get_schema(metadata, table_name):
     """Получить отображение имя столбца -> имя типа."""
     if table_name not in metadata:
-        raise ValueError(f'Таблица "{table_name}" не существует')
+        raise KeyError(table_name)
     return dict(column.split(":") for column in metadata[table_name])
 
 
@@ -89,6 +96,8 @@ def validate_table_data(schema, table_data):
         ids.add(row["ID"])
 
 
+@handle_db_errors
+@log_time
 def insert(metadata, table_name, values):
     """Проверить значения и вернуть данные с новой записью, не сохраняя их."""
     schema = get_schema(metadata, table_name)
@@ -113,13 +122,22 @@ def matches(row, where_clause):
     )
 
 
+@handle_db_errors
+@log_time
 def select(table_data, where_clause=None):
-    """Вернуть все записи или записи, удовлетворяющие условию."""
-    if where_clause is None:
-        return list(table_data)
-    return [row for row in table_data if matches(row, where_clause)]
+    """Кэшировать выборку по условию И содержимому данных."""
+    key = json.dumps([table_data, where_clause], ensure_ascii=False, sort_keys=True)
+
+    def get_result():
+        if where_clause is None:
+            return deepcopy(table_data)
+        return deepcopy([row for row in table_data if matches(row, where_clause)])
+
+    # Копия не позволяет вызывающему коду изменить результат внутри кэша.
+    return deepcopy(cache_select(key, get_result))
 
 
+@handle_db_errors
 def update(table_data, set_clause, where_clause):
     """Вернуть записи с обновлёнными полями; ID изменять нельзя."""
     if "ID" in set_clause:
@@ -130,6 +148,8 @@ def update(table_data, set_clause, where_clause):
     ]
 
 
+@handle_db_errors
+@confirm_action("удаление записей")
 def delete(table_data, where_clause):
     """Вернуть записи, которые не удовлетворяют условию удаления."""
     return [row for row in table_data if not matches(row, where_clause)]

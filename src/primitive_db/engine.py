@@ -15,6 +15,7 @@ from primitive_db.core import (
     validate_fields,
     validate_table_data,
 )
+from primitive_db.decorators import handle_db_errors
 from primitive_db.parser import parse_data_command
 from primitive_db.utils import (
     load_metadata,
@@ -68,9 +69,12 @@ def handle_table_command(metadata, args):
         previous_metadata = metadata.copy()
         table_name = arguments[0]
         if command == "create_table":
-            metadata = create_table(metadata, table_name, arguments[1:])
+            result = create_table(metadata, table_name, arguments[1:])
         else:
-            metadata = drop_table(metadata, table_name)
+            result = drop_table(metadata, table_name)
+        if result is None:
+            return
+        metadata = result
         if metadata != previous_metadata:
             if command == "create_table":
                 save_table_data(table_name, [])
@@ -91,13 +95,14 @@ def handle_data_command(metadata, parsed):
     command = parsed["command"]
     table_name = parsed["table_name"]
     if table_name not in metadata:
-        print(f'Ошибка: Таблица "{table_name}" не существует.')
-        return
+        raise KeyError(table_name)
     schema = get_schema(metadata, table_name)
 
     if command == "insert":
         # Сигнатура insert из ТЗ не принимает данные: она загружает их сама.
         table_data = insert(metadata, table_name, parsed["values"])
+        if table_data is None:
+            return
         save_table_data(table_name, table_data)
         new_id = table_data[-1]["ID"]
         print(f'Запись с ID={new_id} успешно добавлена в таблицу "{table_name}".')
@@ -115,13 +120,13 @@ def handle_data_command(metadata, parsed):
     if where_clause is not None:
         validate_fields(schema, where_clause)
     if command == "select":
-        print_records(schema, select(table_data, where_clause))
+        records = select(table_data, where_clause)
+        if records is not None:
+            print_records(schema, records)
         return
 
     if command == "update":
         validate_fields(schema, parsed["set"])
-        if "ID" in parsed["set"]:
-            raise ValueError("ID генерируется автоматически и не изменяется")
     matching_rows = select(table_data, where_clause)
     if not matching_rows:
         print("Подходящих записей не найдено.")
@@ -131,6 +136,8 @@ def handle_data_command(metadata, parsed):
         new_data = update(table_data, parsed["set"], where_clause)
     else:
         new_data = delete(table_data, where_clause)
+    if new_data is None:
+        return
     save_table_data(table_name, new_data)
     for row in matching_rows:
         if command == "update":
@@ -139,6 +146,26 @@ def handle_data_command(metadata, parsed):
             )
         else:
             print(f'Запись с ID={row["ID"]} успешно удалена из таблицы "{table_name}".')
+
+
+@handle_db_errors
+def execute_command(metadata, user_input):
+    """Обрабатывать ошибки разбора, валидации и файлов на одной границе."""
+    command = user_input.split(maxsplit=1)[0].lower()
+    if command not in DATA_COMMANDS | TABLE_COMMANDS:
+        print(f"Функции {command} нет. Попробуйте снова.")
+        return False
+    if command in DATA_COMMANDS:
+        handle_data_command(metadata, parse_data_command(user_input))
+    else:
+        args = shlex.split(user_input)
+        args[0] = command
+        if command == "exit":
+            if len(args) != 1:
+                raise ValueError("exit не принимает аргументы")
+            return True
+        handle_table_command(metadata, args)
+    return False
 
 
 def run():
@@ -162,25 +189,5 @@ def run():
             return
         if not user_input.strip():
             continue
-        command = user_input.split(maxsplit=1)[0].lower()
-        if command not in DATA_COMMANDS | TABLE_COMMANDS:
-            print(f"Функции {command} нет. Попробуйте снова.")
-            continue
-
-        try:
-            if command in DATA_COMMANDS:
-                handle_data_command(metadata, parse_data_command(user_input))
-            else:
-                args = shlex.split(user_input)
-                args[0] = command
-                if command == "exit":
-                    if len(args) != 1:
-                        raise ValueError("exit не принимает аргументы")
-                    return
-                handle_table_command(metadata, args)
-        except json.JSONDecodeError as error:
-            print(f"Ошибка чтения данных: {error}. Файл не изменён.")
-        except ValueError as error:
-            print(f"Некорректное значение: {error}. Попробуйте снова.")
-        except OSError as error:
-            print(f"Ошибка работы с файлом: {error}")
+        if execute_command(metadata, user_input) is True:
+            return

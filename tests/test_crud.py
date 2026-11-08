@@ -1,4 +1,6 @@
+import contextlib
 import copy
+import io
 import json
 import os
 import subprocess
@@ -89,6 +91,10 @@ class ParserTests(unittest.TestCase):
 
 class CoreCrudTests(unittest.TestCase):
     def setUp(self):
+        self.output = io.StringIO()
+        redirect = contextlib.redirect_stdout(self.output)
+        redirect.__enter__()
+        self.addCleanup(redirect.__exit__, None, None, None)
         self.data = [
             {"ID": 1, "name": "Sergei", "age": 28, "is_active": True},
             {"ID": 3, "name": "Anna", "age": 28, "is_active": False},
@@ -105,10 +111,9 @@ class CoreCrudTests(unittest.TestCase):
         with patch("primitive_db.core.load_table_data", return_value=[]):
             self.assertEqual(insert(SCHEMA, "users", ["", 0, False])[-1]["ID"], 1)
             for values in (["A", 28], [1, "A", 28, True], ["A", True, True]):
-                with self.subTest(values=values), self.assertRaises(ValueError):
-                    insert(SCHEMA, "users", values)
-        with self.assertRaises(ValueError):
-            insert(SCHEMA, "missing", ["A", 28, True])
+                with self.subTest(values=values):
+                    self.assertIsNone(insert(SCHEMA, "users", values))
+        self.assertIsNone(insert(SCHEMA, "missing", ["A", 28, True]))
 
     def test_select_update_delete_all_matching_rows(self):
         original = copy.deepcopy(self.data)
@@ -117,7 +122,8 @@ class CoreCrudTests(unittest.TestCase):
         self.assertEqual(select(self.data, {"ID": True}), [])
         changed = update(self.data, {"age": 29, "is_active": True}, {"age": 28})
         self.assertTrue(all(row["age"] == 29 for row in changed))
-        self.assertEqual(delete(self.data, {"age": 28}), [])
+        with patch("builtins.input", return_value="y"):
+            self.assertEqual(delete(self.data, {"age": 28}), [])
         self.assertEqual(self.data, original)
 
     def test_types_and_id_are_checked(self):
@@ -125,16 +131,12 @@ class CoreCrudTests(unittest.TestCase):
         for fields in ({"age": True}, {"is_active": 1}, {"name": 28}, {"other": 1}):
             with self.subTest(fields=fields), self.assertRaises(ValueError):
                 validate_fields(schema, fields)
-        with self.assertRaises(ValueError):
-            update(self.data, {"ID": 3}, {"ID": 1})
+        self.assertIsNone(update(self.data, {"ID": 3}, {"ID": 1}))
 
     def test_duplicate_saved_ids_are_rejected(self):
         broken = [self.data[0], dict(self.data[0])]
-        with (
-            patch("primitive_db.core.load_table_data", return_value=broken),
-            self.assertRaises(ValueError),
-        ):
-            insert(SCHEMA, "users", ["Ира", 30, True])
+        with patch("primitive_db.core.load_table_data", return_value=broken):
+            self.assertIsNone(insert(SCHEMA, "users", ["Ира", 30, True]))
 
 
 class CrudSessionTests(unittest.TestCase):
@@ -189,7 +191,7 @@ class CrudSessionTests(unittest.TestCase):
             self.assertIs(data[0]["is_active"], False)
             third = self.session(
                 folder,
-                ["delete from users where ID=1", "select from users", "exit"],
+                ["delete from users where ID=1", "y", "select from users", "exit"],
             )
             self.assertIn("ID=1 успешно удалена", third)
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -215,8 +217,8 @@ class CrudSessionTests(unittest.TestCase):
                     "exit",
                 ],
             )
-            self.assertGreaterEqual(output.count("Некорректное значение:"), 8)
-            self.assertIn('Таблица "missing" не существует', output)
+            self.assertGreaterEqual(output.count("Ошибка валидации:"), 8)
+            self.assertIn("Таблица или столбец 'missing' не найден.", output)
             self.assertEqual(path.read_bytes(), original)
 
     def test_deletion_gaps_do_not_duplicate_remaining_ids(self):
@@ -226,6 +228,7 @@ class CrudSessionTests(unittest.TestCase):
                 folder,
                 [
                     "delete from users where ID=1",
+                    "y",
                     'insert into users values ("A", 30, true)',
                     "exit",
                 ],
@@ -237,7 +240,7 @@ class CrudSessionTests(unittest.TestCase):
     def test_drop_and_recreate_does_not_restore_old_rows(self):
         with tempfile.TemporaryDirectory() as folder:
             self.create(folder)
-            self.session(folder, ["drop_table users", "exit"])
+            self.session(folder, ["drop_table users", "y", "exit"])
             self.assertFalse((Path(folder) / "data" / "users.json").exists())
             output = self.session(
                 folder,
