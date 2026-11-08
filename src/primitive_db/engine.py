@@ -2,37 +2,155 @@ import json
 import shlex
 
 import prompt
+from prettytable import PrettyTable
 
-from primitive_db.core import create_table, drop_table
-from primitive_db.utils import load_metadata, save_metadata
+from primitive_db.core import (
+    create_table,
+    delete,
+    drop_table,
+    get_schema,
+    insert,
+    select,
+    update,
+    validate_fields,
+    validate_table_data,
+)
+from primitive_db.parser import parse_data_command
+from primitive_db.utils import (
+    load_metadata,
+    load_table_data,
+    remove_table_data,
+    save_metadata,
+    save_table_data,
+)
 
 METADATA_FILE = "db_meta.json"
+DATA_COMMANDS = {"insert", "select", "update", "delete", "info"}
+TABLE_COMMANDS = {"create_table", "drop_table", "list_tables", "help", "exit"}
 
 
 def print_help():
-    """Показать доступные команды управления таблицами."""
+    """Показать команды управления таблицами и записями."""
     print("\n***Процесс работы с таблицей***")
-    print("Функции:")
-    print("<command> create_table <имя_таблицы> <столбец1:тип> .. - создать таблицу")
+    print("<command> create_table <имя> <столбец:тип> .. - создать таблицу")
     print("<command> list_tables - показать список всех таблиц")
-    print("<command> drop_table <имя_таблицы> - удалить таблицу")
+    print("<command> drop_table <имя> - удалить таблицу")
+    print("\n***Операции с данными***")
+    print("<command> insert into <имя> values (<значение1>, ...) - создать запись")
+    print("<command> select from <имя> [where <столбец> = <значение>] - прочитать")
+    print("<command> update <имя> set <столбец> = <значение> where ... - обновить")
+    print("<command> delete from <имя> where <столбец> = <значение> - удалить")
+    print("<command> info <имя> - информация о таблице")
     print("\nОбщие команды:")
     print("<command> exit - выход из программы")
     print("<command> help - справочная информация\n")
 
 
+def handle_table_command(metadata, args):
+    """Сохранить прежнее управление схемой и связать его с файлами данных."""
+    command, *arguments = args
+    if (
+        (command in {"help", "list_tables"} and arguments)
+        or (command == "drop_table" and len(arguments) != 1)
+        or (command == "create_table" and len(arguments) < 2)
+    ):
+        raise ValueError("неверное количество аргументов команды")
+
+    if command == "help":
+        print_help()
+    elif command == "list_tables":
+        if metadata:
+            for table_name in metadata:
+                print(f"- {table_name}")
+        else:
+            print("Таблиц пока нет.")
+    else:
+        previous_metadata = metadata.copy()
+        table_name = arguments[0]
+        if command == "create_table":
+            metadata = create_table(metadata, table_name, arguments[1:])
+        else:
+            metadata = drop_table(metadata, table_name)
+        if metadata != previous_metadata:
+            if command == "create_table":
+                save_table_data(table_name, [])
+            save_metadata(METADATA_FILE, metadata)
+            if command == "drop_table":
+                remove_table_data(table_name)
+
+
+def print_records(schema, records):
+    table = PrettyTable()
+    table.field_names = list(schema)
+    for row in records:
+        table.add_row([row[column] for column in schema])
+    print(table)
+
+
+def handle_data_command(metadata, parsed):
+    command = parsed["command"]
+    table_name = parsed["table_name"]
+    if table_name not in metadata:
+        print(f'Ошибка: Таблица "{table_name}" не существует.')
+        return
+    schema = get_schema(metadata, table_name)
+
+    if command == "insert":
+        # Сигнатура insert из ТЗ не принимает данные: она загружает их сама.
+        table_data = insert(metadata, table_name, parsed["values"])
+        save_table_data(table_name, table_data)
+        new_id = table_data[-1]["ID"]
+        print(f'Запись с ID={new_id} успешно добавлена в таблицу "{table_name}".')
+        return
+
+    table_data = load_table_data(table_name)
+    validate_table_data(schema, table_data)
+    if command == "info":
+        print(f"Таблица: {table_name}")
+        print(f"Столбцы: {', '.join(metadata[table_name])}")
+        print(f"Количество записей: {len(table_data)}")
+        return
+
+    where_clause = parsed["where"]
+    if where_clause is not None:
+        validate_fields(schema, where_clause)
+    if command == "select":
+        print_records(schema, select(table_data, where_clause))
+        return
+
+    if command == "update":
+        validate_fields(schema, parsed["set"])
+        if "ID" in parsed["set"]:
+            raise ValueError("ID генерируется автоматически и не изменяется")
+    matching_rows = select(table_data, where_clause)
+    if not matching_rows:
+        print("Подходящих записей не найдено.")
+        return
+
+    if command == "update":
+        new_data = update(table_data, parsed["set"], where_clause)
+    else:
+        new_data = delete(table_data, where_clause)
+    save_table_data(table_name, new_data)
+    for row in matching_rows:
+        if command == "update":
+            print(
+                f'Запись с ID={row["ID"]} в таблице "{table_name}" успешно обновлена.'
+            )
+        else:
+            print(f'Запись с ID={row["ID"]} успешно удалена из таблицы "{table_name}".')
+
+
 def run():
-    """Загружать метаданные, обрабатывать команды и сохранять изменения."""
+    """Основной цикл: чтение -> разбор -> проверка -> операция -> сохранение."""
     print("***База данных***")
     print_help()
-
     while True:
         try:
             metadata = load_metadata(METADATA_FILE)
         except (OSError, json.JSONDecodeError) as error:
             print(f"Ошибка чтения метаданных: {error}")
             return
-
         if not isinstance(metadata, dict):
             print("Ошибка: метаданные должны содержать JSON-объект с таблицами.")
             return
@@ -42,50 +160,27 @@ def run():
         except (EOFError, KeyboardInterrupt):
             print()
             return
-
-        try:
-            args = shlex.split(user_input)
-        except ValueError:
-            print(f"Некорректное значение: {user_input}. Попробуйте снова.")
+        if not user_input.strip():
             continue
-
-        if not args:
-            continue
-
-        command = args[0]
-        arguments = args[1:]
-        if command not in {"exit", "help", "list_tables", "create_table", "drop_table"}:
+        command = user_input.split(maxsplit=1)[0].lower()
+        if command not in DATA_COMMANDS | TABLE_COMMANDS:
             print(f"Функции {command} нет. Попробуйте снова.")
             continue
 
-        if (
-            (command in {"exit", "help", "list_tables"} and arguments)
-            or (command == "drop_table" and len(arguments) != 1)
-            or (command == "create_table" and len(arguments) < 2)
-        ):
-            print(f"Некорректное значение: {user_input}. Попробуйте снова.")
-            continue
-
-        if command == "exit":
-            return
-        if command == "help":
-            print_help()
-        elif command == "list_tables":
-            if metadata:
-                for table_name in metadata:
-                    print(f"- {table_name}")
+        try:
+            if command in DATA_COMMANDS:
+                handle_data_command(metadata, parse_data_command(user_input))
             else:
-                print("Таблиц пока нет.")
-        else:
-            previous_metadata = metadata.copy()
-            if command == "create_table":
-                metadata = create_table(metadata, arguments[0], arguments[1:])
-            else:
-                metadata = drop_table(metadata, arguments[0])
-
-            # Ошибочная команда не должна перезаписывать файл.
-            if metadata != previous_metadata:
-                try:
-                    save_metadata(METADATA_FILE, metadata)
-                except OSError as error:
-                    print(f"Ошибка: изменения не сохранены в файл: {error}")
+                args = shlex.split(user_input)
+                args[0] = command
+                if command == "exit":
+                    if len(args) != 1:
+                        raise ValueError("exit не принимает аргументы")
+                    return
+                handle_table_command(metadata, args)
+        except json.JSONDecodeError as error:
+            print(f"Ошибка чтения данных: {error}. Файл не изменён.")
+        except ValueError as error:
+            print(f"Некорректное значение: {error}. Попробуйте снова.")
+        except OSError as error:
+            print(f"Ошибка работы с файлом: {error}")

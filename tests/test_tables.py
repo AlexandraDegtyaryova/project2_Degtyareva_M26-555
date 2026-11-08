@@ -208,6 +208,8 @@ class CommandTests(unittest.TestCase):
         with (
             patch("primitive_db.engine.load_metadata", return_value=metadata),
             patch("primitive_db.engine.prompt.string", side_effect=commands),
+            patch("primitive_db.engine.save_table_data"),
+            patch("primitive_db.engine.remove_table_data"),
             patch(
                 "primitive_db.engine.save_metadata",
                 side_effect=lambda _, data: saved.append(copy.deepcopy(data)),

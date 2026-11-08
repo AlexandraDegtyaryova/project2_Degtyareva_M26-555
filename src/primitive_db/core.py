@@ -1,4 +1,7 @@
+from primitive_db.utils import load_table_data
+
 SUPPORTED_TYPES = {"int", "str", "bool"}
+PYTHON_TYPES = {"int": int, "str": str, "bool": bool}
 
 
 def create_table(metadata, table_name, columns):
@@ -55,3 +58,78 @@ def drop_table(metadata, table_name):
     del metadata[table_name]
     print(f'Таблица "{table_name}" успешно удалена.')
     return metadata
+
+
+def get_schema(metadata, table_name):
+    """Получить отображение имя столбца -> имя типа."""
+    if table_name not in metadata:
+        raise ValueError(f'Таблица "{table_name}" не существует')
+    return dict(column.split(":") for column in metadata[table_name])
+
+
+def validate_fields(schema, fields):
+    """Проверить имена и точные типы: bool не должен приниматься вместо int."""
+    for column, value in fields.items():
+        if column not in schema:
+            raise ValueError(f"неизвестный столбец: {column}")
+        expected_type = PYTHON_TYPES[schema[column]]
+        if type(value) is not expected_type:
+            raise ValueError(f"{column} ожидает {schema[column]}, получено {value!r}")
+
+
+def validate_table_data(schema, table_data):
+    """Повреждённые записи не должны быть перезаписаны новой операцией."""
+    ids = set()
+    for row in table_data:
+        if set(row) != set(schema):
+            raise ValueError("сохранённая запись не соответствует столбцам таблицы")
+        validate_fields(schema, row)
+        if row["ID"] < 1 or row["ID"] in ids:
+            raise ValueError("сохранённые ID должны быть положительными и уникальными")
+        ids.add(row["ID"])
+
+
+def insert(metadata, table_name, values):
+    """Проверить значения и вернуть данные с новой записью, не сохраняя их."""
+    schema = get_schema(metadata, table_name)
+    columns = [name for name in schema if name != "ID"]
+    if len(values) != len(columns):
+        raise ValueError(
+            f"ожидалось значений: {len(columns)} (без ID), получено: {len(values)}"
+        )
+    fields = dict(zip(columns, values, strict=True))
+    validate_fields(schema, fields)
+    table_data = load_table_data(table_name)
+    validate_table_data(schema, table_data)
+    new_id = max((row["ID"] for row in table_data), default=0) + 1
+    return [*table_data, {"ID": new_id, **fields}]
+
+
+def matches(row, where_clause):
+    """Условие использует равенство значений одинакового типа."""
+    return all(
+        column in row and type(row[column]) is type(value) and row[column] == value
+        for column, value in where_clause.items()
+    )
+
+
+def select(table_data, where_clause=None):
+    """Вернуть все записи или записи, удовлетворяющие условию."""
+    if where_clause is None:
+        return list(table_data)
+    return [row for row in table_data if matches(row, where_clause)]
+
+
+def update(table_data, set_clause, where_clause):
+    """Вернуть записи с обновлёнными полями; ID изменять нельзя."""
+    if "ID" in set_clause:
+        raise ValueError("ID генерируется автоматически и не изменяется")
+    return [
+        {**row, **set_clause} if matches(row, where_clause) else dict(row)
+        for row in table_data
+    ]
+
+
+def delete(table_data, where_clause):
+    """Вернуть записи, которые не удовлетворяют условию удаления."""
+    return [row for row in table_data if not matches(row, where_clause)]
