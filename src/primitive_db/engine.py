@@ -4,6 +4,7 @@ import shlex
 import prompt
 from prettytable import PrettyTable
 
+from primitive_db.constants import DATA_COMMANDS, META_FILE, TABLE_COMMANDS
 from primitive_db.core import (
     create_table,
     delete,
@@ -24,10 +25,6 @@ from primitive_db.utils import (
     save_metadata,
     save_table_data,
 )
-
-METADATA_FILE = "db_meta.json"
-DATA_COMMANDS = {"insert", "select", "update", "delete", "info"}
-TABLE_COMMANDS = {"create_table", "drop_table", "list_tables", "help", "exit"}
 
 
 def print_help():
@@ -78,12 +75,13 @@ def handle_table_command(metadata, args):
         if metadata != previous_metadata:
             if command == "create_table":
                 save_table_data(table_name, [])
-            save_metadata(METADATA_FILE, metadata)
+            save_metadata(META_FILE, metadata)
             if command == "drop_table":
                 remove_table_data(table_name)
 
 
 def print_records(schema, records):
+    """Напечатать записи в порядке столбцов схемы через PrettyTable."""
     table = PrettyTable()
     table.field_names = list(schema)
     for row in records:
@@ -92,6 +90,7 @@ def print_records(schema, records):
 
 
 def handle_data_command(metadata, parsed):
+    """Выполнить разобранную CRUD-команду и сохранить успешные изменения."""
     command = parsed["command"]
     table_name = parsed["table_name"]
     if table_name not in metadata:
@@ -174,7 +173,7 @@ def run():
     print_help()
     while True:
         try:
-            metadata = load_metadata(METADATA_FILE)
+            metadata = load_metadata(META_FILE)
         except (OSError, json.JSONDecodeError) as error:
             print(f"Ошибка чтения метаданных: {error}")
             return
