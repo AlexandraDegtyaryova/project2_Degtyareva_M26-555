@@ -190,3 +190,12 @@ uv run python -m unittest discover -s tests -v
 6. Проверить через `list_tables`, что таблица сохранилась.
 7. Выполнить `drop_table users`, затем `drop_table products`.
 8. Проверить пустой список таблиц и выйти командой `exit`.
+
+## Демонстрация CRUD
+
+[![CRUD: создание, чтение, обновление и удаление записей](https://asciinema.org/a/UVCjAOFkcOWyWEJv.svg)](https://asciinema.org/a/UVCjAOFkcOWyWEJv)
+
+В записи показаны установка пакета и запуск `database`, вставка записей,
+выборка через PrettyTable, обновление, сохранение после перезапуска,
+удаление, `info`, проверка типов и автоматическая генерация ID.
+[Исходный файл записи](docs/crud-demo.cast) сохранён в репозитории.
