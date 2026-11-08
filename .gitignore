@@ -2,3 +2,6 @@
 dist/
 __pycache__/
 *.egg-info
+# Локальные данные и кеш инструментов
+db_meta.json
+.ruff_cache/

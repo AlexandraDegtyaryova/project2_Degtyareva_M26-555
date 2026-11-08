@@ -1,7 +1,7 @@
 [project]
 name = "primitive-db"
 version = "0.1.0"
-description = "Add your description here"
+description = "Учебная консольная база данных с управлением таблицами"
 readme = "README.md"
 authors = [
     { name = "Alexandra Degtyareva", email = "adeg_15@mail.ru" }
@@ -12,6 +12,7 @@ dependencies = [
 ]
 
 [project.scripts]
+database = "primitive_db.main:main"
 project = "primitive_db.main:main"
 
 [build-system]
@@ -31,4 +32,3 @@ ignore = []
 dev = [
     "ruff>=0.17.4",
 ]
-
